@@ -6,13 +6,13 @@ A production-ready microservices architecture demonstrating distributed systems 
 
 ## Architecture Overview
 
-This system consists of **4 microservices** implementing an inventory management system:
+This system consists of **4 microservices** + **1 frontend** implementing a complete e-commerce platform:
 
 ```
 ┌─────────────┐
-│   Client    │
+│   Browser   │  ← ShopHub Frontend (React)
 └──────┬──────┘
-       │
+       │ :3000
        ▼
 ┌─────────────────┐
 │  API Gateway    │ :8080
@@ -48,13 +48,15 @@ This system consists of **4 microservices** implementing an inventory management
 
 ### Services
 
-1. **API Gateway** (Port 8080) - Single entry point, request routing
-2. **Inventory Service** (Port 8081) - Product catalog and stock management
-3. **Order Service** (Port 8082) - Order processing and fulfillment
-4. **Notification Service** (Port 8083) - Event-driven notifications
+1. **ShopHub Frontend** (Port 3000) - E-commerce web application (React)
+2. **API Gateway** (Port 8080) - Single entry point, request routing
+3. **Inventory Service** (Port 8081) - Product catalog and stock management
+4. **Order Service** (Port 8082) - Order processing and fulfillment
+5. **Notification Service** (Port 8083) - Event-driven notifications
 
 ### Infrastructure
 
+- **React + Vite** - Modern frontend with premium UI
 - **PostgreSQL** - Database per service pattern (Inventory DB, Order DB)
 - **Kafka** - Event-driven messaging between services
 - **Prometheus** - Metrics collection and storage
@@ -157,7 +159,25 @@ curl -X POST http://localhost:8080/api/orders \
 curl http://localhost:8080/api/orders
 ```
 
-### 4. Access Observability Tools
+### 4. Access the Frontend
+
+**ShopHub E-commerce UI**: http://localhost:3000
+
+```bash
+# In a new terminal, start the frontend
+cd frontend
+npm install  # First time only
+npm run dev
+```
+
+Features:
+- 🛍️ Beautiful product catalog
+- 🛒 Interactive shopping cart
+- ✨ Amazon/Flipkart-inspired design
+- 📱 Mobile responsive
+- 🎨 Smooth animations
+
+### 5. Access Observability Tools
 
 **Prometheus**: http://localhost:9090
 - Explore raw metrics
