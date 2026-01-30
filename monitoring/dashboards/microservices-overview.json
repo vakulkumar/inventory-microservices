@@ -1,0 +1,272 @@
+{
+    "dashboard": {
+        "title": "Microservices Inventory System - Overview",
+        "tags": [
+            "microservices",
+            "inventory",
+            "observability"
+        ],
+        "timezone": "browser",
+        "editable": true,
+        "graphTooltip": 1,
+        "panels": [
+            {
+                "id": 1,
+                "title": "Request Rate by Service",
+                "type": "graph",
+                "gridPos": {
+                    "h": 8,
+                    "w": 12,
+                    "x": 0,
+                    "y": 0
+                },
+                "targets": [
+                    {
+                        "expr": "sum(rate(inventory_http_requests_total[1m])) by (endpoint)",
+                        "legendFormat": "Inventory - {{endpoint}}",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "sum(rate(order_http_requests_total[1m])) by (endpoint)",
+                        "legendFormat": "Order - {{endpoint}}",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "sum(rate(gateway_http_requests_total[1m])) by (route)",
+                        "legendFormat": "Gateway - {{route}}",
+                        "refId": "C"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "reqps",
+                        "label": "Requests/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 2,
+                "title": "Request Latency (95th Percentile)",
+                "type": "graph",
+                "gridPos": {
+                    "h": 8,
+                    "w": 12,
+                    "x": 12,
+                    "y": 0
+                },
+                "targets": [
+                    {
+                        "expr": "histogram_quantile(0.95, sum(rate(inventory_http_request_duration_seconds_bucket[1m])) by (le, endpoint))",
+                        "legendFormat": "Inventory - {{endpoint}}",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.95, sum(rate(order_http_request_duration_seconds_bucket[1m])) by (le, endpoint))",
+                        "legendFormat": "Order - {{endpoint}}",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.95, sum(rate(gateway_http_request_duration_seconds_bucket[1m])) by (le, route))",
+                        "legendFormat": "Gateway - {{route}}",
+                        "refId": "C"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "s",
+                        "label": "Latency"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 3,
+                "title": "Error Rate",
+                "type": "graph",
+                "gridPos": {
+                    "h": 7,
+                    "w": 12,
+                    "x": 0,
+                    "y": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum(rate(inventory_http_requests_total{status=~\"5..\"}[1m]))",
+                        "legendFormat": "Inventory 5xx",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "sum(rate(order_http_requests_total{status=~\"5..\"}[1m]))",
+                        "legendFormat": "Order 5xx",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "sum(rate(gateway_http_requests_total{status=~\"5..\"}[1m]))",
+                        "legendFormat": "Gateway 5xx",
+                        "refId": "C"
+                    },
+                    {
+                        "expr": "sum(rate(gateway_errors_total[1m]))",
+                        "legendFormat": "Gateway Errors",
+                        "refId": "D"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "reqps",
+                        "label": "Errors/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 4,
+                "title": "Order Processing Metrics",
+                "type": "graph",
+                "gridPos": {
+                    "h": 7,
+                    "w": 12,
+                    "x": 12,
+                    "y": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum(rate(order_orders_total[1m])) by (status)",
+                        "legendFormat": "Orders - {{status}}",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.95, sum(rate(order_processing_duration_seconds_bucket[1m])) by (le))",
+                        "legendFormat": "Processing Time (p95)",
+                        "refId": "B"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "short",
+                        "label": "Rate/Time"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 5,
+                "title": "Database Query Latency",
+                "type": "graph",
+                "gridPos": {
+                    "h": 7,
+                    "w": 12,
+                    "x": 0,
+                    "y": 15
+                },
+                "targets": [
+                    {
+                        "expr": "histogram_quantile(0.95, sum(rate(inventory_db_query_duration_seconds_bucket[1m])) by (le))",
+                        "legendFormat": "Inventory DB (p95)",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "s",
+                        "label": "Query Time"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 6,
+                "title": "Stock Levels",
+                "type": "graph",
+                "gridPos": {
+                    "h": 7,
+                    "w": 12,
+                    "x": 12,
+                    "y": 15
+                },
+                "targets": [
+                    {
+                        "expr": "inventory_stock_levels",
+                        "legendFormat": "{{product_name}} (ID: {{product_id}})",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "short",
+                        "label": "Stock Quantity"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 7,
+                "title": "Notification Service Metrics",
+                "type": "graph",
+                "gridPos": {
+                    "h": 7,
+                    "w": 12,
+                    "x": 0,
+                    "y": 22
+                },
+                "targets": [
+                    {
+                        "expr": "sum(rate(notification_notifications_sent_total[1m])) by (event_type)",
+                        "legendFormat": "{{event_type}}",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.95, sum(rate(notification_message_processing_duration_seconds_bucket[1m])) by (le))",
+                        "legendFormat": "Processing Time (p95)",
+                        "refId": "B"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "short",
+                        "label": "Notifications/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 8,
+                "title": "HTTP Status Codes Distribution",
+                "type": "piechart",
+                "gridPos": {
+                    "h": 7,
+                    "w": 12,
+                    "x": 12,
+                    "y": 22
+                },
+                "targets": [
+                    {
+                        "expr": "sum(increase(gateway_http_requests_total[5m])) by (status)",
+                        "legendFormat": "{{status}}",
+                        "refId": "A"
+                    }
+                ]
+            }
+        ],
+        "time": {
+            "from": "now-15m",
+            "to": "now"
+        },
+        "refresh": "5s"
+    }
+}

@@ -1,0 +1,49 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+inventory-service
+order-service
+notification-service
+api-gateway
+
+# Go
+*.test
+*.out
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Dependencies
+vendor/
+
+# Docker
+*.log
+
+# Environment
+.env
+.env.local
+
+# Data
+*.db
+data/
+
+# Temporary files
+tmp/
+temp/
