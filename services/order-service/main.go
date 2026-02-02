@@ -24,6 +24,7 @@ import (
 // Order represents a customer order
 type Order struct {
 	ID         int       `json:"id"`
+	UserID     int       `json:"user_id"`
 	ProductID  int       `json:"product_id"`
 	Quantity   int       `json:"quantity"`
 	TotalPrice float64   `json:"total_price"`
@@ -125,6 +126,7 @@ func main() {
 	router.HandleFunc("/orders", createOrder).Methods("POST")
 	router.HandleFunc("/orders", getOrders).Methods("GET")
 	router.HandleFunc("/orders/{id}", getOrder).Methods("GET")
+	router.HandleFunc("/orders/user/{userId}", getOrdersByUser).Methods("GET")
 	router.HandleFunc("/health", healthCheck).Methods("GET")
 	router.Handle("/metrics", promhttp.Handler())
 
@@ -137,6 +139,7 @@ func initDB() {
 	schema := `
 	CREATE TABLE IF NOT EXISTS orders (
 		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL DEFAULT 0,
 		product_id INTEGER NOT NULL,
 		quantity INTEGER NOT NULL,
 		total_price DECIMAL(10, 2) NOT NULL,
@@ -148,6 +151,13 @@ func initDB() {
 	if err != nil {
 		log.Fatal("Failed to create schema:", err)
 	}
+
+	// Migration for existing table
+	_, err = db.Exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS user_id INTEGER NOT NULL DEFAULT 0;")
+	if err != nil {
+		log.Println("Warning: Failed to add user_id column (might already exist or other error):", err)
+	}
+
 	log.Println("Database schema initialized")
 }
 
@@ -180,6 +190,7 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	var orderReq struct {
 		ProductID int `json:"product_id"`
 		Quantity  int `json:"quantity"`
+		UserID    int `json:"user_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&orderReq); err != nil {
@@ -209,8 +220,8 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	// Create order
 	var order Order
 	err = db.QueryRow(
-		"INSERT INTO orders (product_id, quantity, total_price, status) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
-		orderReq.ProductID, orderReq.Quantity, totalPrice, "confirmed",
+		"INSERT INTO orders (product_id, quantity, total_price, status, user_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at",
+		orderReq.ProductID, orderReq.Quantity, totalPrice, "confirmed", orderReq.UserID,
 	).Scan(&order.ID, &order.CreatedAt)
 
 	if err != nil {
@@ -223,6 +234,7 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	order.Quantity = orderReq.Quantity
 	order.TotalPrice = totalPrice
 	order.Status = "confirmed"
+	order.UserID = orderReq.UserID
 
 	// Update inventory (reduce stock)
 	newStock := product.Stock - orderReq.Quantity
@@ -251,7 +263,7 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func getOrders(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, product_id, quantity, total_price, status, created_at FROM orders ORDER BY id DESC")
+	rows, err := db.Query("SELECT id, user_id, product_id, quantity, total_price, status, created_at FROM orders ORDER BY id DESC")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -261,7 +273,7 @@ func getOrders(w http.ResponseWriter, r *http.Request) {
 	orders := []Order{}
 	for rows.Next() {
 		var o Order
-		err := rows.Scan(&o.ID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
+		err := rows.Scan(&o.ID, &o.UserID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -278,8 +290,8 @@ func getOrder(w http.ResponseWriter, r *http.Request) {
 	id := vars["id"]
 
 	var o Order
-	err := db.QueryRow("SELECT id, product_id, quantity, total_price, status, created_at FROM orders WHERE id = $1", id).
-		Scan(&o.ID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
+	err := db.QueryRow("SELECT id, user_id, product_id, quantity, total_price, status, created_at FROM orders WHERE id = $1", id).
+		Scan(&o.ID, &o.UserID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
 
 	if err == sql.ErrNoRows {
 		http.Error(w, "Order not found", http.StatusNotFound)
@@ -292,6 +304,32 @@ func getOrder(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(o)
+}
+
+func getOrdersByUser(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	userId := vars["userId"]
+
+	rows, err := db.Query("SELECT id, user_id, product_id, quantity, total_price, status, created_at FROM orders WHERE user_id = $1 ORDER BY id DESC", userId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	orders := []Order{}
+	for rows.Next() {
+		var o Order
+		err := rows.Scan(&o.ID, &o.UserID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		orders = append(orders, o)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(orders)
 }
 
 func healthCheck(w http.ResponseWriter, r *http.Request) {
