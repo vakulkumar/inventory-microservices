@@ -251,7 +251,35 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func getOrders(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("SELECT id, product_id, quantity, total_price, status, created_at FROM orders ORDER BY id DESC")
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+
+	limit := 50
+	offset := 0
+	var err error
+
+	if limitStr != "" {
+		limit, err = strconv.Atoi(limitStr)
+		if err != nil || limit < 0 {
+			http.Error(w, "Invalid limit", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Safety cap on limit
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	if offsetStr != "" {
+		offset, err = strconv.Atoi(offsetStr)
+		if err != nil || offset < 0 {
+			http.Error(w, "Invalid offset", http.StatusBadRequest)
+			return
+		}
+	}
+
+	rows, err := db.Query("SELECT id, product_id, quantity, total_price, status, created_at FROM orders ORDER BY id DESC LIMIT $1 OFFSET $2", limit, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
