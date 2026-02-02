@@ -74,6 +74,7 @@ var (
 
 var db *sql.DB
 var kafkaWriter *kafka.Writer
+var httpClient *http.Client
 
 func main() {
 	// Database connection
@@ -108,6 +109,16 @@ func main() {
 
 	// Initialize database schema
 	initDB()
+
+	// HTTP Client
+	httpClient = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 
 	// Kafka producer
 	kafkaBroker := getEnv("KAFKA_BROKER", "localhost:9092")
@@ -308,7 +319,7 @@ func healthCheck(w http.ResponseWriter, r *http.Request) {
 
 func getProductInfo(baseURL string, productID int) (*Product, error) {
 	url := fmt.Sprintf("%s/products/%d", baseURL, productID)
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -347,8 +358,7 @@ func updateProductStock(baseURL string, productID int, product *Product, newStoc
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
