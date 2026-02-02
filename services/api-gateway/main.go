@@ -44,6 +44,21 @@ var (
 var inventoryServiceURL string
 var orderServiceURL string
 
+var httpClient *http.Client
+
+func init() {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 100
+	t.MaxConnsPerHost = 100
+	t.MaxIdleConnsPerHost = 100
+	t.IdleConnTimeout = 90 * time.Second
+
+	httpClient = &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: t,
+	}
+}
+
 func main() {
 	inventoryServiceURL = getEnv("INVENTORY_SERVICE_URL", "http://localhost:8081")
 	orderServiceURL = getEnv("ORDER_SERVICE_URL", "http://localhost:8082")
@@ -108,8 +123,7 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, targetURL, stripPrefix
 	}
 
 	// Execute request
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(proxyReq)
+	resp, err := httpClient.Do(proxyReq)
 	if err != nil {
 		errorRate.WithLabelValues(r.URL.Path, "request_execution").Inc()
 		log.Printf("Error proxying request to %s: %v", targetURL, err)
