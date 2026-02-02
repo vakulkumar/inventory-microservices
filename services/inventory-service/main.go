@@ -170,8 +170,30 @@ func (rw *responseWriter) WriteHeader(code int) {
 
 func getProducts(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+
+	limit := 50
+	offset := 0
+
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	if limit > 100 {
+		limit = 100
+	}
+
+	if offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
 	
-	rows, err := db.Query("SELECT id, name, description, price, stock, created_at FROM products ORDER BY id")
+	rows, err := db.Query("SELECT id, name, description, price, stock, created_at FROM products ORDER BY id LIMIT $1 OFFSET $2", limit, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
