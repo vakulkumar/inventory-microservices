@@ -38,6 +38,19 @@ export const orderService = {
         return response.json();
     },
 
+    async createBulkOrder(bulkOrderData) {
+        const response = await fetch(`${API_BASE_URL}/orders/bulk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bulkOrderData),
+        });
+        if (!response.ok) {
+            const error = await response.text();
+            throw new Error(error || 'Failed to place bulk order');
+        }
+        return response.json();
+    },
+
     async getAllOrders() {
         const response = await fetch(`${API_BASE_URL}/orders`);
         if (!response.ok) throw new Error('Failed to fetch orders');

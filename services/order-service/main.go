@@ -40,6 +40,13 @@ type Product struct {
 	Stock int     `json:"stock"`
 }
 
+type BulkOrderRequest struct {
+	Items []struct {
+		ProductID int `json:"product_id"`
+		Quantity  int `json:"quantity"`
+	} `json:"items"`
+}
+
 // Prometheus metrics
 var (
 	httpRequestsTotal = promauto.NewCounterVec(
@@ -135,6 +142,7 @@ func main() {
 	router.Use(metricsMiddleware)
 
 	router.HandleFunc("/orders", createOrder).Methods("POST")
+	router.HandleFunc("/orders/bulk", createBulkOrder).Methods("POST")
 	router.HandleFunc("/orders", getOrders).Methods("GET")
 	router.HandleFunc("/orders/{id}", getOrder).Methods("GET")
 	router.HandleFunc("/orders/user/{userId}", getOrdersByUser).Methods("GET")
@@ -271,6 +279,115 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(order)
+}
+
+func createBulkOrder(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	var bulkReq BulkOrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&bulkReq); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	inventoryURL := getEnv("INVENTORY_SERVICE_URL", "http://localhost:8081")
+
+	// Validation Phase
+	type ValidatedItem struct {
+		ProductID int
+		Quantity  int
+		Product   *Product
+	}
+	validatedItems := make([]ValidatedItem, 0, len(bulkReq.Items))
+
+	for _, item := range bulkReq.Items {
+		product, err := getProductInfo(inventoryURL, item.ProductID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to fetch product %d: %v", item.ProductID, err), http.StatusBadRequest)
+			ordersTotal.WithLabelValues("failed").Inc()
+			return
+		}
+
+		if product.Stock < item.Quantity {
+			http.Error(w, fmt.Sprintf("Insufficient stock for product %d", item.ProductID), http.StatusBadRequest)
+			ordersTotal.WithLabelValues("failed").Inc()
+			return
+		}
+
+		validatedItems = append(validatedItems, ValidatedItem{
+			ProductID: item.ProductID,
+			Quantity:  item.Quantity,
+			Product:   product,
+		})
+	}
+
+	// Transaction Phase
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	var createdOrders []Order
+
+	for _, item := range validatedItems {
+		totalPrice := item.Product.Price * float64(item.Quantity)
+
+		var order Order
+		err := tx.QueryRow(
+			"INSERT INTO orders (product_id, quantity, total_price, status) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
+			item.ProductID, item.Quantity, totalPrice, "confirmed",
+		).Scan(&order.ID, &order.CreatedAt)
+
+		if err != nil {
+			log.Printf("Failed to create order for product %d: %v", item.ProductID, err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			ordersTotal.WithLabelValues("failed").Inc()
+			return
+		}
+
+		order.ProductID = item.ProductID
+		order.Quantity = item.Quantity
+		order.TotalPrice = totalPrice
+		order.Status = "confirmed"
+		createdOrders = append(createdOrders, order)
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit transaction: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// External Phase (Inventory & Kafka)
+	for i, order := range createdOrders {
+		item := validatedItems[i]
+
+		newStock := item.Product.Stock - item.Quantity
+		err = updateProductStock(inventoryURL, item.ProductID, item.Product, newStock)
+		if err != nil {
+			log.Printf("Failed to update inventory for product %d: %v", item.ProductID, err)
+		}
+
+		event := map[string]interface{}{
+			"event_type":  "order_created",
+			"order_id":    order.ID,
+			"product_id":  order.ProductID,
+			"quantity":    order.Quantity,
+			"total_price": order.TotalPrice,
+			"timestamp":   time.Now().Unix(),
+		}
+		publishEvent(event)
+
+		ordersTotal.WithLabelValues("confirmed").Inc()
+	}
+
+	orderProcessingDuration.Observe(time.Since(start).Seconds())
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(createdOrders)
 }
 
 func getOrders(w http.ResponseWriter, r *http.Request) {
@@ -410,7 +527,7 @@ func updateProductStock(baseURL string, productID int, product *Product, newStoc
 	return nil
 }
 
-func publishEvent(event map[string]interface{}) {
+var publishEvent = func(event map[string]interface{}) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("Failed to marshal event: %v", err)

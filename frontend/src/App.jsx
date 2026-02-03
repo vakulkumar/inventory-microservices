@@ -110,14 +110,12 @@ function App() {
 
         try {
             // Place orders for each item
-            const orderPromises = cart.map(item =>
-                orderService.createOrder({
-                    product_id: item.id,
-                    quantity: item.quantity
-                })
-            );
+            const orderItems = cart.map(item => ({
+                product_id: item.id,
+                quantity: item.quantity
+            }));
 
-            await Promise.all(orderPromises);
+            await orderService.createBulkOrder({ items: orderItems });
 
             // Clear cart and show success
             setCart([]);
