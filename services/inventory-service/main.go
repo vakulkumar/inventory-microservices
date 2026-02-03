@@ -146,12 +146,12 @@ func initDB() {
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		
+
 		// Wrap ResponseWriter to capture status code
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		
+
 		next.ServeHTTP(wrapped, r)
-		
+
 		duration := time.Since(start).Seconds()
 		httpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
 		httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(wrapped.statusCode)).Inc()
@@ -170,7 +170,7 @@ func (rw *responseWriter) WriteHeader(code int) {
 
 func getProducts(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	
+
 	rows, err := db.Query("SELECT id, name, description, price, stock, created_at FROM products ORDER BY id")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -189,9 +189,6 @@ func getProducts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		products = append(products, p)
-		
-		// Update stock level metric
-		stockLevels.WithLabelValues(strconv.Itoa(p.ID), p.Name).Set(float64(p.Stock))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -206,7 +203,7 @@ func getProduct(w http.ResponseWriter, r *http.Request) {
 	var p Product
 	err := db.QueryRow("SELECT id, name, description, price, stock, created_at FROM products WHERE id = $1", id).
 		Scan(&p.ID, &p.Name, &p.Description, &p.Price, &p.Stock, &p.CreatedAt)
-	
+
 	dbQueryDuration.Observe(time.Since(start).Seconds())
 
 	if err == sql.ErrNoRows {
@@ -227,7 +224,7 @@ func getProduct(w http.ResponseWriter, r *http.Request) {
 func createProduct(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var p Product
-	
+
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
