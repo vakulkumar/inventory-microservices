@@ -39,7 +39,7 @@ func main() {
 	kafkaBroker := getEnv("KAFKA_BROKER", "localhost:9092")
 
 	// Read from multiple topics
-	topics := []string{"inventory-events", "order-events"}
+	topics := []string{"inventory-events", "order-events", "payment-events"}
 
 	readers := make([]*kafka.Reader, len(topics))
 	for i, topic := range topics {
@@ -144,6 +144,10 @@ func processNotification(event map[string]interface{}, eventType string) {
 	case "product_deleted":
 		log.Printf("🗑️  NOTIFICATION: Product deleted! Product ID: %s",
 			event["product_id"])
+
+	case "payment_processed":
+		log.Printf("💸 NOTIFICATION: Payment processed! Payment ID: %.0f, Order ID: %.0f, Amount: %.2f, Status: %s",
+			event["payment_id"], event["order_id"], event["amount"], event["status"])
 
 	default:
 		log.Printf("📨 NOTIFICATION: Unknown event type: %s", eventType)

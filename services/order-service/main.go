@@ -24,6 +24,7 @@ import (
 // Order represents a customer order
 type Order struct {
 	ID         int       `json:"id"`
+	UserID     int       `json:"user_id"`
 	ProductID  int       `json:"product_id"`
 	Quantity   int       `json:"quantity"`
 	TotalPrice float64   `json:"total_price"`
@@ -37,6 +38,13 @@ type Product struct {
 	Name  string  `json:"name"`
 	Price float64 `json:"price"`
 	Stock int     `json:"stock"`
+}
+
+type BulkOrderRequest struct {
+	Items []struct {
+		ProductID int `json:"product_id"`
+		Quantity  int `json:"quantity"`
+	} `json:"items"`
 }
 
 // Prometheus metrics
@@ -74,6 +82,7 @@ var (
 
 var db *sql.DB
 var kafkaWriter *kafka.Writer
+var httpClient *http.Client
 
 func main() {
 	// Database connection
@@ -109,6 +118,16 @@ func main() {
 	// Initialize database schema
 	initDB()
 
+	// HTTP Client
+	httpClient = &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
+
 	// Kafka producer
 	kafkaBroker := getEnv("KAFKA_BROKER", "localhost:9092")
 	kafkaWriter = &kafka.Writer{
@@ -123,8 +142,10 @@ func main() {
 	router.Use(metricsMiddleware)
 
 	router.HandleFunc("/orders", createOrder).Methods("POST")
+	router.HandleFunc("/orders/bulk", createBulkOrder).Methods("POST")
 	router.HandleFunc("/orders", getOrders).Methods("GET")
 	router.HandleFunc("/orders/{id}", getOrder).Methods("GET")
+	router.HandleFunc("/orders/user/{userId}", getOrdersByUser).Methods("GET")
 	router.HandleFunc("/health", healthCheck).Methods("GET")
 	router.Handle("/metrics", promhttp.Handler())
 
@@ -137,6 +158,7 @@ func initDB() {
 	schema := `
 	CREATE TABLE IF NOT EXISTS orders (
 		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL DEFAULT 0,
 		product_id INTEGER NOT NULL,
 		quantity INTEGER NOT NULL,
 		total_price DECIMAL(10, 2) NOT NULL,
@@ -148,6 +170,13 @@ func initDB() {
 	if err != nil {
 		log.Fatal("Failed to create schema:", err)
 	}
+
+	// Migration for existing table
+	_, err = db.Exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS user_id INTEGER NOT NULL DEFAULT 0;")
+	if err != nil {
+		log.Println("Warning: Failed to add user_id column (might already exist or other error):", err)
+	}
+
 	log.Println("Database schema initialized")
 }
 
@@ -180,6 +209,7 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	var orderReq struct {
 		ProductID int `json:"product_id"`
 		Quantity  int `json:"quantity"`
+		UserID    int `json:"user_id"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&orderReq); err != nil {
@@ -209,8 +239,8 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	// Create order
 	var order Order
 	err = db.QueryRow(
-		"INSERT INTO orders (product_id, quantity, total_price, status) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
-		orderReq.ProductID, orderReq.Quantity, totalPrice, "confirmed",
+		"INSERT INTO orders (product_id, quantity, total_price, status, user_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at",
+		orderReq.ProductID, orderReq.Quantity, totalPrice, "confirmed", orderReq.UserID,
 	).Scan(&order.ID, &order.CreatedAt)
 
 	if err != nil {
@@ -223,6 +253,7 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	order.Quantity = orderReq.Quantity
 	order.TotalPrice = totalPrice
 	order.Status = "confirmed"
+	order.UserID = orderReq.UserID
 
 	// Update inventory (reduce stock)
 	newStock := product.Stock - orderReq.Quantity
@@ -248,6 +279,115 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(order)
+}
+
+func createBulkOrder(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
+	var bulkReq BulkOrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&bulkReq); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	inventoryURL := getEnv("INVENTORY_SERVICE_URL", "http://localhost:8081")
+
+	// Validation Phase
+	type ValidatedItem struct {
+		ProductID int
+		Quantity  int
+		Product   *Product
+	}
+	validatedItems := make([]ValidatedItem, 0, len(bulkReq.Items))
+
+	for _, item := range bulkReq.Items {
+		product, err := getProductInfo(inventoryURL, item.ProductID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to fetch product %d: %v", item.ProductID, err), http.StatusBadRequest)
+			ordersTotal.WithLabelValues("failed").Inc()
+			return
+		}
+
+		if product.Stock < item.Quantity {
+			http.Error(w, fmt.Sprintf("Insufficient stock for product %d", item.ProductID), http.StatusBadRequest)
+			ordersTotal.WithLabelValues("failed").Inc()
+			return
+		}
+
+		validatedItems = append(validatedItems, ValidatedItem{
+			ProductID: item.ProductID,
+			Quantity:  item.Quantity,
+			Product:   product,
+		})
+	}
+
+	// Transaction Phase
+	tx, err := db.Begin()
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback()
+
+	var createdOrders []Order
+
+	for _, item := range validatedItems {
+		totalPrice := item.Product.Price * float64(item.Quantity)
+
+		var order Order
+		err := tx.QueryRow(
+			"INSERT INTO orders (product_id, quantity, total_price, status) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
+			item.ProductID, item.Quantity, totalPrice, "confirmed",
+		).Scan(&order.ID, &order.CreatedAt)
+
+		if err != nil {
+			log.Printf("Failed to create order for product %d: %v", item.ProductID, err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			ordersTotal.WithLabelValues("failed").Inc()
+			return
+		}
+
+		order.ProductID = item.ProductID
+		order.Quantity = item.Quantity
+		order.TotalPrice = totalPrice
+		order.Status = "confirmed"
+		createdOrders = append(createdOrders, order)
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit transaction: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	// External Phase (Inventory & Kafka)
+	for i, order := range createdOrders {
+		item := validatedItems[i]
+
+		newStock := item.Product.Stock - item.Quantity
+		err = updateProductStock(inventoryURL, item.ProductID, item.Product, newStock)
+		if err != nil {
+			log.Printf("Failed to update inventory for product %d: %v", item.ProductID, err)
+		}
+
+		event := map[string]interface{}{
+			"event_type":  "order_created",
+			"order_id":    order.ID,
+			"product_id":  order.ProductID,
+			"quantity":    order.Quantity,
+			"total_price": order.TotalPrice,
+			"timestamp":   time.Now().Unix(),
+		}
+		publishEvent(event)
+
+		ordersTotal.WithLabelValues("confirmed").Inc()
+	}
+
+	orderProcessingDuration.Observe(time.Since(start).Seconds())
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(createdOrders)
 }
 
 func getOrders(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +419,7 @@ func getOrders(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := db.Query("SELECT id, product_id, quantity, total_price, status, created_at FROM orders ORDER BY id DESC LIMIT $1 OFFSET $2", limit, offset)
+	rows, err := db.Query("SELECT id, user_id, product_id, quantity, total_price, status, created_at FROM orders ORDER BY id DESC LIMIT $1 OFFSET $2", limit, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -289,7 +429,7 @@ func getOrders(w http.ResponseWriter, r *http.Request) {
 	orders := []Order{}
 	for rows.Next() {
 		var o Order
-		err := rows.Scan(&o.ID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
+		err := rows.Scan(&o.ID, &o.UserID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -306,8 +446,8 @@ func getOrder(w http.ResponseWriter, r *http.Request) {
 	id := vars["id"]
 
 	var o Order
-	err := db.QueryRow("SELECT id, product_id, quantity, total_price, status, created_at FROM orders WHERE id = $1", id).
-		Scan(&o.ID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
+	err := db.QueryRow("SELECT id, user_id, product_id, quantity, total_price, status, created_at FROM orders WHERE id = $1", id).
+		Scan(&o.ID, &o.UserID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
 
 	if err == sql.ErrNoRows {
 		http.Error(w, "Order not found", http.StatusNotFound)
@@ -320,6 +460,32 @@ func getOrder(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(o)
+}
+
+func getOrdersByUser(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	userId := vars["userId"]
+
+	rows, err := db.Query("SELECT id, user_id, product_id, quantity, total_price, status, created_at FROM orders WHERE user_id = $1 ORDER BY id DESC", userId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	orders := []Order{}
+	for rows.Next() {
+		var o Order
+		err := rows.Scan(&o.ID, &o.UserID, &o.ProductID, &o.Quantity, &o.TotalPrice, &o.Status, &o.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		orders = append(orders, o)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(orders)
 }
 
 func healthCheck(w http.ResponseWriter, r *http.Request) {
@@ -336,7 +502,7 @@ func healthCheck(w http.ResponseWriter, r *http.Request) {
 
 func getProductInfo(baseURL string, productID int) (*Product, error) {
 	url := fmt.Sprintf("%s/products/%d", baseURL, productID)
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -375,8 +541,7 @@ func updateProductStock(baseURL string, productID int, product *Product, newStoc
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -390,7 +555,7 @@ func updateProductStock(baseURL string, productID int, product *Product, newStoc
 	return nil
 }
 
-func publishEvent(event map[string]interface{}) {
+var publishEvent = func(event map[string]interface{}) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("Failed to marshal event: %v", err)

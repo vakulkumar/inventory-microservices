@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sony/gobreaker"
 )
 
 // Prometheus metrics
@@ -44,9 +45,27 @@ var (
 var inventoryServiceURL string
 var orderServiceURL string
 
+var inventoryCB *gobreaker.CircuitBreaker
+var orderCB *gobreaker.CircuitBreaker
+
 func main() {
 	inventoryServiceURL = getEnv("INVENTORY_SERVICE_URL", "http://localhost:8081")
 	orderServiceURL = getEnv("ORDER_SERVICE_URL", "http://localhost:8082")
+
+	var st gobreaker.Settings
+	st.Name = "InventoryService"
+	st.ReadyToTrip = func(counts gobreaker.Counts) bool {
+		failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+		return counts.Requests >= 3 && failureRatio >= 0.6
+	}
+	st.Timeout = 30 * time.Second
+	st.OnStateChange = func(name string, from gobreaker.State, to gobreaker.State) {
+		log.Printf("Circuit Breaker %s changed state from %s to %s", name, from, to)
+	}
+	inventoryCB = gobreaker.NewCircuitBreaker(st)
+
+	st.Name = "OrderService"
+	orderCB = gobreaker.NewCircuitBreaker(st)
 
 	router := mux.NewRouter()
 	router.Use(loggingMiddleware)
@@ -73,14 +92,14 @@ func main() {
 }
 
 func proxyToInventory(w http.ResponseWriter, r *http.Request) {
-	proxyRequest(w, r, inventoryServiceURL, "/api/products", "/products")
+	proxyRequest(w, r, inventoryServiceURL, "/api/products", "/products", inventoryCB)
 }
 
 func proxyToOrders(w http.ResponseWriter, r *http.Request) {
-	proxyRequest(w, r, orderServiceURL, "/api/orders", "/orders")
+	proxyRequest(w, r, orderServiceURL, "/api/orders", "/orders", orderCB)
 }
 
-func proxyRequest(w http.ResponseWriter, r *http.Request, targetURL, stripPrefix, newPrefix string) {
+func proxyRequest(w http.ResponseWriter, r *http.Request, targetURL, stripPrefix, newPrefix string, cb *gobreaker.CircuitBreaker) {
 	// Build target URL
 	path := r.URL.Path
 	if stripPrefix != "" {
@@ -109,13 +128,22 @@ func proxyRequest(w http.ResponseWriter, r *http.Request, targetURL, stripPrefix
 
 	// Execute request
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(proxyReq)
+	result, err := cb.Execute(func() (interface{}, error) {
+		return client.Do(proxyReq)
+	})
+
 	if err != nil {
 		errorRate.WithLabelValues(r.URL.Path, "request_execution").Inc()
 		log.Printf("Error proxying request to %s: %v", targetURL, err)
-		http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		if err == gobreaker.ErrOpenState {
+			http.Error(w, "Service unavailable (Circuit Breaker Open)", http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
+
+	resp := result.(*http.Response)
 	defer resp.Body.Close()
 
 	// Copy response headers
