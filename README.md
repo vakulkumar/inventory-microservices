@@ -6,7 +6,7 @@ A production-ready microservices architecture demonstrating distributed systems 
 
 ## Architecture Overview
 
-This system consists of **4 microservices** + **1 frontend** implementing a complete e-commerce platform:
+This system consists of **5 microservices** + **1 frontend** implementing a complete e-commerce platform:
 
 ```
 ┌─────────────┐
@@ -15,7 +15,7 @@ This system consists of **4 microservices** + **1 frontend** implementing a comp
        │ :3000
        ▼
 ┌─────────────────┐
-│  API Gateway    │ :8080
+│  API Gateway    │ :8080 (with Circuit Breaker)
 │  (Reverse Proxy)│
 └────┬────────┬───┘
      │        │
@@ -29,14 +29,14 @@ This system consists of **4 microservices** + **1 frontend** implementing a comp
      ▼            ▼
    ┌──────────────────┐
    │   Kafka Broker   │
-   └────────┬─────────┘
-            │
-            ▼
-   ┌──────────────────┐
-   │  Notification    │
-   │    Service       │
-   │     :8083        │
-   └──────────────────┘
+   └───┬──────────┬───┘
+       │          │
+       ▼          ▼
+┌────────────┐  ┌──────────────┐
+│Notification│  │   Payment    │
+│  Service   │  │   Service    │
+│  :8083     │  │   :8084      │
+└────────────┘  └──────────────┘
 
          │
          ▼
@@ -49,10 +49,11 @@ This system consists of **4 microservices** + **1 frontend** implementing a comp
 ### Services
 
 1. **ShopHub Frontend** (Port 3000) - E-commerce web application (React)
-2. **API Gateway** (Port 8080) - Single entry point, request routing
+2. **API Gateway** (Port 8080) - Single entry point, request routing with **Circuit Breaker**
 3. **Inventory Service** (Port 8081) - Product catalog and stock management
-4. **Order Service** (Port 8082) - Order processing and fulfillment
+4. **Order Service** (Port 8082) - Order processing with bulk checkout support
 5. **Notification Service** (Port 8083) - Event-driven notifications
+6. **Payment Service** (Port 8084) - Payment processing via Kafka events
 
 ### Infrastructure
 
@@ -84,10 +85,11 @@ This system consists of **4 microservices** + **1 frontend** implementing a comp
 ### Microservices Patterns
 
 - **Database per Service** - Data isolation
-- **API Gateway** - Single entry point
+- **API Gateway** - Single entry point with **Circuit Breaker** (gobreaker)
 - **Event-Driven Architecture** - Kafka pub/sub
 - **Health Checks** - Service health monitoring
 - **Service Discovery** - Docker/Kubernetes networking
+- **Bulk Operations** - Transactional bulk order checkout
 
 ## Prerequisites
 
@@ -106,8 +108,8 @@ docker-compose up --build
 ```
 
 This will start:
-- All 4 microservices
-- 2 PostgreSQL databases
+- All 5 microservices (including Payment Service)
+- 3 PostgreSQL databases (Inventory, Order, Payment)
 - Kafka + Zookeeper
 - Prometheus
 - Grafana
@@ -233,13 +235,16 @@ You should see notifications like:
 |--------|----------|-------------|
 | GET | `/orders` | List all orders |
 | GET | `/orders/{id}` | Get order by ID |
+| GET | `/orders/user/{userId}` | Get orders by user |
 | POST | `/orders` | Create new order |
+| POST | `/orders/bulk` | Create bulk order (checkout) |
 
 **Example Order Request**:
 ```json
 {
   "product_id": 1,
-  "quantity": 5
+  "quantity": 5,
+  "user_id": 1
 }
 ```
 
@@ -247,11 +252,22 @@ You should see notifications like:
 ```json
 {
   "id": 1,
+  "user_id": 1,
   "product_id": 1,
   "quantity": 5,
   "total_price": 4999.95,
   "status": "confirmed",
   "created_at": "2026-01-30T06:05:00Z"
+}
+```
+
+**Bulk Order Request**:
+```json
+{
+  "items": [
+    { "product_id": 1, "quantity": 2 },
+    { "product_id": 2, "quantity": 1 }
+  ]
 }
 ```
 
@@ -278,12 +294,18 @@ You should see notifications like:
 **API Gateway**:
 - `gateway_http_requests_total` - HTTP request count by route
 - `gateway_http_request_duration_seconds` - Request latency
-- `gateway_errors_total` - Error count by type
+- `gateway_errors_total` - Error count by type (includes circuit breaker state)
+
+**Payment Service**:
+- `payment_processed_total` - Total payments processed by status
+- `payment_processing_duration_seconds` - Payment processing time
+- `payment_http_requests_total` - HTTP request count
 
 ### Kafka Event Topics
 
 - `inventory-events` - Product lifecycle events
-- `order-events` - Order lifecycle events
+- `order-events` - Order lifecycle events (consumed by Payment Service)
+- `payment-events` - Payment completion events
 
 ## Kubernetes Deployment
 
@@ -434,15 +456,23 @@ docker-compose exec kafka kafka-topics --list --bootstrap-server localhost:9092
 curl http://localhost:8081/metrics
 ```
 
+## Recent Enhancements
+
+- [x] **Circuit Breaker** - Implemented with gobreaker in API Gateway
+- [x] **Payment Service** - Event-driven payment processing
+- [x] **Bulk Order Checkout** - Transactional bulk order creation
+- [x] **User Orders** - Get orders by user ID
+- [x] **Optimized HTTP Client** - Connection pooling in Order Service
+- [x] **Unit Tests** - Added tests for Inventory Service
+
 ## Future Enhancements
 
-- [ ] Add circuit breaker pattern with resilience4j/Hystrix
 - [ ] Implement distributed tracing with Jaeger
 - [ ] Add API authentication (JWT)
 - [ ] Implement rate limiting
 - [ ] Add Kubernetes Horizontal Pod Autoscaler
 - [ ] Set up Prometheus alerting rules
-- [ ] Add integration tests
+- [ ] Add more integration tests
 - [ ] Implement saga pattern for distributed transactions
 
 ## License
